@@ -5,68 +5,85 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Voice Agent</title>
   <style>
-    :root { color-scheme: light; }
+    :root { color-scheme: dark; }
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: #0a0a0a;
+      color: #f0f0f0;
+    }
     body {
       font-family: system-ui, -apple-system, sans-serif;
-      max-width: 640px;
-      margin: 40px auto;
-      padding: 0 16px;
-      background: #ffffff;
-      color: #1a1a1a;
     }
-    h1 { font-size: 1.4rem; }
-    #status {
-      display: inline-block;
-      padding: 4px 10px;
-      border-radius: 999px;
-      font-size: 0.85rem;
-      background: #eee;
-      color: #333;
+    .view {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      height: 100%;
+      width: 100%;
     }
-    #status.connected { background: #d4f7d4; color: #1a6b1a; }
-    #status.connecting { background: #fff3cd; color: #8a6d00; }
-    #status.error { background: #f8d4d4; color: #8a1a1a; }
-    .controls { display: flex; gap: 8px; margin: 16px 0; }
-    button {
-      padding: 10px 16px;
+    .view[hidden] { display: none; }
+    #talkBtn {
+      width: 160px;
+      height: 160px;
+      border-radius: 50%;
+      border: none;
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: #fff;
+      background: #3366ff;
+      cursor: pointer;
+      transition: background 0.15s ease, transform 0.1s ease;
+    }
+    #talkBtn:active { transform: scale(0.97); }
+    #talkBtn:disabled { opacity: 0.5; cursor: not-allowed; }
+    #talkBtn.active { background: #cc3333; }
+    #statusText { font-size: 0.9rem; color: #999; }
+    #codeView h1 { font-size: 1.3rem; font-weight: 600; margin: 0; }
+    #codeView p { font-size: 0.9rem; color: #999; margin: 0 0 8px; }
+    #gate { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+    #gate input {
+      padding: 10px 14px;
+      font-size: 1rem;
+      border-radius: 8px;
+      border: 1px solid #333;
+      background: #1a1a1a;
+      color: #f0f0f0;
+      text-align: center;
+      width: 200px;
+    }
+    #gate button {
+      padding: 10px 20px;
       font-size: 0.95rem;
       border-radius: 8px;
-      border: 1px solid #ccc;
+      border: none;
+      background: #3366ff;
+      color: #fff;
       cursor: pointer;
-      background: #f5f5f5;
     }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
-    button.active { background: #d4e4ff; border-color: #6699ff; }
-    #transcript {
-      border: 1px solid #ddd;
-      border-radius: 8px;
-      padding: 12px;
-      height: 320px;
-      overflow-y: auto;
-      white-space: pre-wrap;
-      line-height: 1.5;
-    }
-    #transcript .user { color: #1a4b8a; }
-    #transcript .agent { color: #1a6b1a; }
-    .text-row { display: flex; gap: 8px; margin-top: 12px; }
-    .text-row input { flex: 1; padding: 8px; border-radius: 8px; border: 1px solid #ccc; }
+    #gate button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #gateError { font-size: 0.85rem; color: #ff6b6b; min-height: 1em; }
   </style>
 </head>
 <body>
-  <h1>Voice Agent <span id="status">disconnected</span></h1>
-
-  <div class="controls">
-    <button id="connectBtn">Connect</button>
-    <button id="micBtn" disabled>🎙️ Start mic</button>
+  <div id="codeView" class="view">
+    <h1>Voice Agent</h1>
+    <p>Enter access code to continue</p>
+    <form id="gate">
+      <input id="codeInput" type="password" placeholder="Access code" autocomplete="off" autofocus />
+      <button type="submit">Continue</button>
+      <div id="gateError"></div>
+    </form>
   </div>
 
-  <div id="transcript"></div>
-
-  <form class="text-row" id="textForm">
-    <input id="textInput" type="text" placeholder="Or type a message..." disabled />
-    <button id="sendBtn" type="submit" disabled>Send</button>
-  </form>
+  <div id="talkView" class="view" hidden>
+    <button id="talkBtn">Start</button>
+    <div id="statusText">disconnected</div>
+  </div>
 
   <script type="module" src="app.js"></script>
 </body>
 </html>
+

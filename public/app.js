@@ -1,160 +1,146 @@
-const statusEl = document.getElementById('status');
-const connectBtn = document.getElementById('connectBtn');
-const micBtn = document.getElementById('micBtn');
-const transcriptEl = document.getElementById('transcript');
-const textForm = document.getElementById('textForm');
-const textInput = document.getElementById('textInput');
-const sendBtn = document.getElementById('sendBtn');
+const talkBtn = document.getElementById('talkBtn');
+const statusText = document.getElementById('statusText');
+const codeView = document.getElementById('codeView');
+const talkView = document.getElementById('talkView');
+const gateEl = document.getElementById('gate');
+const codeInput = document.getElementById('codeInput');
+const gateError = document.getElementById('gateError');
 
-const INPUT_SAMPLE_RATE = 24000;
-const OUTPUT_SAMPLE_RATE = 24000;
+const SAMPLE_RATE = 24000;
+const CODE_KEY = 'voiceAgentAccessCode';
 
 let ws = null;
+let wsOpened = false;
 let micStream = null;
-let micAudioCtx = null;
-let micProcessor = null;
-let playbackAudioCtx = null;
+let micCtx = null;
+let micWorkletNode = null;
+let playbackCtx = null;
 let nextPlaybackTime = 0;
-let agentLine = null;
+let scheduledSources = [];
 
 function setStatus(text, cls) {
-  statusEl.textContent = text;
-  statusEl.className = cls || '';
+  statusText.textContent = text;
+  talkBtn.className = cls || '';
 }
 
-function appendLine(role, text) {
-  const line = document.createElement('div');
-  line.className = role;
-  line.textContent = (role === 'user' ? 'You: ' : 'Agent: ') + text;
-  transcriptEl.appendChild(line);
-  transcriptEl.scrollTop = transcriptEl.scrollHeight;
-  return line;
+function showGate() {
+  codeView.hidden = false;
+  talkView.hidden = true;
 }
 
-function appendToAgentLine(delta) {
-  if (!agentLine) agentLine = appendLine('agent', '');
-  agentLine.textContent += delta;
-  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+function showTalkView() {
+  codeView.hidden = true;
+  talkView.hidden = false;
 }
 
-// --- WebSocket connection to our proxy server ---
+if (sessionStorage.getItem(CODE_KEY) !== null) showTalkView();
 
-function connect() {
-  setStatus('connecting…', 'connecting');
-  connectBtn.disabled = true;
+// --- Start: connect to the proxy (with the access code) + start streaming the mic ---
+
+async function connect(code) {
+  talkBtn.disabled = true;
+  wsOpened = false;
 
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(`${protocol}//${location.host}/ws`);
+  const url = new URL(`${protocol}//${location.host}/ws`);
+  if (code) url.searchParams.set('code', code);
+  ws = new WebSocket(url);
 
-  ws.addEventListener('open', () => {
-    setStatus('connected', 'connected');
-    connectBtn.textContent = 'Disconnect';
-    connectBtn.disabled = false;
-    micBtn.disabled = false;
-    textInput.disabled = false;
-    sendBtn.disabled = false;
+  ws.addEventListener('open', async () => {
+    wsOpened = true;
 
     ws.send(JSON.stringify({
       type: 'session.update',
       session: {
         turn_detection: { type: 'server_vad' },
         audio: {
-          input: { format: { type: 'audio/pcm', rate: INPUT_SAMPLE_RATE } },
-          output: { format: { type: 'audio/pcm', rate: OUTPUT_SAMPLE_RATE } },
+          input: { format: { type: 'audio/pcm', rate: SAMPLE_RATE } },
+          output: { format: { type: 'audio/pcm', rate: SAMPLE_RATE } },
         },
       },
     }));
+
+    try {
+      await startMic();
+      setStatus('listening', 'active');
+      talkBtn.textContent = 'Stop';
+    } catch {
+      stop();
+    } finally {
+      talkBtn.disabled = false;
+    }
   });
 
   ws.addEventListener('message', (event) => {
     const data = JSON.parse(event.data);
-    handleServerEvent(data);
+    if (data.type === 'response.output_audio.delta') playAudioChunk(data.delta);
+    else if (data.type === 'input_audio_buffer.speech_started') interrupt();
   });
 
   ws.addEventListener('close', () => {
-    setStatus('disconnected', '');
-    connectBtn.textContent = 'Connect';
-    connectBtn.disabled = false;
-    micBtn.disabled = true;
-    textInput.disabled = true;
-    sendBtn.disabled = true;
-    stopMic();
-    ws = null;
+    if (!wsOpened) {
+      // Handshake was rejected before it ever opened - the code is no longer valid.
+      sessionStorage.removeItem(CODE_KEY);
+      gateError.textContent = 'Invalid code';
+      talkBtn.disabled = false;
+      ws = null;
+      showGate();
+      return;
+    }
+    stop();
   });
-
-  ws.addEventListener('error', () => {
-    setStatus('error', 'error');
-  });
+  ws.addEventListener('error', () => {});
 }
 
-function disconnect() {
+// --- Stop: tear down mic + websocket ---
+
+function stop() {
   ws?.close();
+  ws = null;
+  stopMic();
+  setStatus('disconnected', '');
+  talkBtn.textContent = 'Start';
+  talkBtn.disabled = false;
 }
 
-function handleServerEvent(event) {
-  switch (event.type) {
-    case 'response.output_audio_transcript.delta':
-      appendToAgentLine(event.delta);
-      break;
-    case 'response.output_audio.delta':
-      playAudioChunk(event.delta);
-      break;
-    case 'response.done':
-      agentLine = null;
-      break;
-    case 'conversation.item.input_audio_transcription.updated':
-      // Cumulative transcript of what the user said.
-      break;
-    case 'error':
-      appendLine('agent', `[error] ${event.message || JSON.stringify(event)}`);
-      break;
-    default:
-      break;
-  }
-}
-
-// --- Microphone capture (PCM16 @ 24kHz, sent as input_audio_buffer.append) ---
+// --- Microphone capture via AudioWorklet (PCM16 @ 24kHz) ---
 
 async function startMic() {
   micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  micAudioCtx = new AudioContext({ sampleRate: INPUT_SAMPLE_RATE });
-  const source = micAudioCtx.createMediaStreamSource(micStream);
-  micProcessor = micAudioCtx.createScriptProcessor(4096, 1, 1);
+  micCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+  await micCtx.audioWorklet.addModule('mic-worklet.js');
 
-  micProcessor.onaudioprocess = (e) => {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    const float32 = e.inputBuffer.getChannelData(0);
-    const pcm16 = new Int16Array(float32.length);
-    for (let i = 0; i < float32.length; i++) {
-      const s = Math.max(-1, Math.min(1, float32[i]));
-      pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  const source = micCtx.createMediaStreamSource(micStream);
+  micWorkletNode = new AudioWorkletNode(micCtx, 'mic-processor');
+
+  micWorkletNode.port.onmessage = (event) => {
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: 'input_audio_buffer.append',
+        audio: base64FromArrayBuffer(event.data),
+      }));
     }
-    ws.send(JSON.stringify({
-      type: 'input_audio_buffer.append',
-      audio: base64FromInt16(pcm16),
-    }));
   };
 
-  source.connect(micProcessor);
-  micProcessor.connect(micAudioCtx.destination);
-
-  micBtn.textContent = '⏹️ Stop mic';
-  micBtn.classList.add('active');
+  // Route through a silent gain node: keeps the worklet processing without
+  // playing the mic back through the speakers (which would cause feedback).
+  const silence = micCtx.createGain();
+  silence.gain.value = 0;
+  source.connect(micWorkletNode).connect(silence).connect(micCtx.destination);
 }
 
 function stopMic() {
-  micProcessor?.disconnect();
-  micAudioCtx?.close();
+  micWorkletNode?.port.close();
+  micWorkletNode?.disconnect();
+  micCtx?.close();
   micStream?.getTracks().forEach((t) => t.stop());
-  micProcessor = null;
-  micAudioCtx = null;
+  micWorkletNode = null;
+  micCtx = null;
   micStream = null;
-  micBtn.textContent = '🎙️ Start mic';
-  micBtn.classList.remove('active');
 }
 
-function base64FromInt16(int16) {
-  const bytes = new Uint8Array(int16.buffer);
+function base64FromArrayBuffer(buffer) {
+  const bytes = new Uint8Array(buffer);
   let binary = '';
   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
   return btoa(binary);
@@ -163,9 +149,9 @@ function base64FromInt16(int16) {
 // --- Audio playback (base64 PCM16 @ 24kHz, scheduled back-to-back) ---
 
 function playAudioChunk(base64Audio) {
-  if (!playbackAudioCtx) {
-    playbackAudioCtx = new AudioContext({ sampleRate: OUTPUT_SAMPLE_RATE });
-    nextPlaybackTime = playbackAudioCtx.currentTime;
+  if (!playbackCtx) {
+    playbackCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+    nextPlaybackTime = playbackCtx.currentTime;
   }
 
   const binary = atob(base64Audio);
@@ -173,42 +159,60 @@ function playAudioChunk(base64Audio) {
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   const pcm16 = new Int16Array(bytes.buffer);
 
-  const buffer = playbackAudioCtx.createBuffer(1, pcm16.length, OUTPUT_SAMPLE_RATE);
+  const buffer = playbackCtx.createBuffer(1, pcm16.length, SAMPLE_RATE);
   const channel = buffer.getChannelData(0);
   for (let i = 0; i < pcm16.length; i++) channel[i] = pcm16[i] / 32768;
 
-  const source = playbackAudioCtx.createBufferSource();
+  const source = playbackCtx.createBufferSource();
   source.buffer = buffer;
-  source.connect(playbackAudioCtx.destination);
+  source.connect(playbackCtx.destination);
+  scheduledSources.push(source);
+  source.onended = () => {
+    scheduledSources = scheduledSources.filter((s) => s !== source);
+  };
 
-  const startAt = Math.max(nextPlaybackTime, playbackAudioCtx.currentTime);
+  const startAt = Math.max(nextPlaybackTime, playbackCtx.currentTime);
   source.start(startAt);
   nextPlaybackTime = startAt + buffer.duration;
 }
 
+// Barge-in: the user started talking, so stop whatever the agent is playing/queued.
+function interrupt() {
+  for (const source of scheduledSources) {
+    try { source.stop(); } catch { /* already stopped */ }
+  }
+  scheduledSources = [];
+  if (playbackCtx) nextPlaybackTime = playbackCtx.currentTime;
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'response.cancel' }));
+  }
+}
+
 // --- UI wiring ---
 
-connectBtn.addEventListener('click', () => {
-  if (ws) disconnect();
-  else connect();
+talkBtn.addEventListener('click', () => {
+  if (ws) stop();
+  else connect(sessionStorage.getItem(CODE_KEY) || '');
 });
 
-micBtn.addEventListener('click', () => {
-  if (micStream) stopMic();
-  else startMic();
-});
-
-textForm.addEventListener('submit', (e) => {
+gateEl.addEventListener('submit', async (e) => {
   e.preventDefault();
-  const text = textInput.value.trim();
-  if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+  gateError.textContent = '';
+  const submitBtn = gateEl.querySelector('button');
+  submitBtn.disabled = true;
 
-  ws.send(JSON.stringify({
-    type: 'conversation.item.create',
-    item: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] },
-  }));
-  ws.send(JSON.stringify({ type: 'response.create' }));
-
-  appendLine('user', text);
-  textInput.value = '';
+  const code = codeInput.value.trim();
+  try {
+    const res = await fetch(`/api/verify-code?code=${encodeURIComponent(code)}`);
+    if (res.ok) {
+      sessionStorage.setItem(CODE_KEY, code);
+      showTalkView();
+    } else {
+      gateError.textContent = 'Invalid code';
+    }
+  } catch {
+    gateError.textContent = 'Could not reach server';
+  } finally {
+    submitBtn.disabled = false;
+  }
 });

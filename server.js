@@ -20,6 +20,7 @@ const HOST = process.env.HOST || '0.0.0.0';
 
 const XAI_API_KEY = process.env.XAI_API_KEY;
 const AGENT_ID = process.env.XAI_AGENT_ID || 'agent_aO77hWH5RND6FnJu';
+const ACCESS_CODE = process.env.ACCESS_CODE;
 
 if (!XAI_API_KEY) {
   console.error('Missing XAI_API_KEY environment variable');
@@ -39,6 +40,14 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (req.method === 'GET' && req.url.startsWith('/api/verify-code')) {
+    const { searchParams } = new URL(req.url, 'http://localhost');
+    const ok = !ACCESS_CODE || searchParams.get('code') === ACCESS_CODE;
+    res.writeHead(ok ? 200 : 401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok }));
+    return;
+  }
+
   const reqPath = req.url === '/' ? '/index.html' : req.url;
   const filePath = path.join(PUBLIC_DIR, path.normalize(reqPath).replace(/^(\.\.[/\\])+/, ''));
 
@@ -54,7 +63,15 @@ const server = http.createServer((req, res) => {
   });
 });
 
-const wss = new WebSocketServer({ server, path: '/ws' });
+const wss = new WebSocketServer({
+  server,
+  path: '/ws',
+  verifyClient: ({ req }, callback) => {
+    if (!ACCESS_CODE) return callback(true);
+    const { searchParams } = new URL(req.url, 'http://localhost');
+    callback(searchParams.get('code') === ACCESS_CODE, 401, 'Unauthorized');
+  },
+});
 
 wss.on('connection', (client) => {
   const upstream = new WebSocket(`wss://api.x.ai/v1/realtime?agent_id=${AGENT_ID}`, {

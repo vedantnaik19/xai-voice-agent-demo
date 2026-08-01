@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: voice-agent-web
+    runtime: docker
+    plan: free
+    healthCheckPath: /healthz
+    envVars:
+      - key: XAI_API_KEY
+        sync: false
+      - key: XAI_AGENT_ID
+        value: agent_aO77hWH5RND6FnJu

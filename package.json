@@ -1,0 +1,17 @@
+{
+  "name": "sales-agent-voice-web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal webpage + proxy server to talk to the realtime voice agent",
+  "main": "server.js",
+  "engines": {
+    "node": ">=20.6.0"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
